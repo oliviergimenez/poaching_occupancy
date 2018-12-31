@@ -3,7 +3,9 @@
 
 ### 1. Introduction. 
 
-This repo contains data and codes associated with a submitted paper on inferring wildlife poaching in Southeast Asia with multispecies dynamic occupancy models and hidden Markov models. Specifically, we present the two-species dynamic occupancy model introduced by MacKenzie et al. (2006) (see Table 8.7 page 245) which we formulate as a hidden Markov model (HMM) and implement in R. Note that the data (in particular the shapefiles for spatial analyses) are in zip files that you will need to unzip to reproduce the results. 
+This repo contains data and codes associated with a submitted paper on inferring wildlife poaching in Southeast Asia with multispecies dynamic occupancy models and hidden Markov models. Specifically, we present the two-species dynamic occupancy model introduced by MacKenzie et al. (2006) (see Table 8.7 page 245) which we formulate as a hidden Markov model (HMM) and implement in R. 
+
+Note that the data (in particular the shapefiles for spatial analyses) are in zip files that you will need to unzip to reproduce the results. 
 
 ### 2. Case study of poacher and wildlife interactions in Cambodia
 
