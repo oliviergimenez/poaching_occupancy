@@ -1,0 +1,1703 @@
+---
+title: "SMART data occupancy analyses"
+author: "L. Marescot, A. Lyet,  R. Singh, N. Carter, and O. Gimenez"
+date: '`r Sys.time()`'
+output:
+  html_document:
+    code_folding: hide
+  pdf_document: default
+---
+
+<style>
+  /* Style the linenumber div */
+
+  .linenumbers {
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background-color: #EBEBEB;
+    text-align: center;
+    padding: 0px 3px;
+    font-family: monospace;
+    float: left;
+    position: absolute;
+    transform:translate(-125%);
+    font-size: inherit !important;
+  }
+
+<!--  https://stackoverflow.com/questions/34259171/how-can-i-implement-a-spoiler-quote-with-just-css -->
+.spoiler, .spoiler > * { transition: color 0.5s, opacity 0.5s }
+.spoiler:not(:hover) { color: transparent }
+.spoiler:not(:hover) > * { opacity: 0 }
+/* fix weird transitions on Chrome: */
+blockquote, blockquote > *:not(a) { color: black }
+</style>
+  
+Here we used the SMART data and a mutlispecies dynamic occupancy model to identify co-occurence patterns of poachers and wildlife and infer their interaction.    
+
+# a) loading the libraries, the SMART data and the shapefiles
+We load the library necessary for the analysis
+tydyverse and lubridate helps reformating exploring the raw data
+maptool, rgeos and rgdal are treating GIS shape files and data points with spatial coordinates
+msm is used for the calculation of standard error associated to the parameter estimates
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(lubridate)
+library(sf)
+library(raster)
+library(rgdal)
+library(maptools)
+library(msm)
+library(rgeos)
+library(geosphere)
+```
+
+## Data import
+Here we combined and format the data of the Phnom Prich Wildlife Sancturary PPWS (named smart_data) and SWS (named smart_data2) study area. Eventually, we perfom a joint analysis of the dynamic occupancy of multiple species across the two study sites. 
+
+```{r}
+path = 'C:/Users/Marescot/Documents/GitHub/sdp_occ_wwf/Last files/SMART_DATA_2013-2017/'
+smart_data <- read.csv(paste0(path,'AllPatrol_2013-2016.csv'),sep=',',header=T)
+path2 = 'C:/Users/Marescot/Documents/GitHub/sdp_occ_wwf/Last files/MPF_Data_2013-2017/'
+smart_data2 <- read.csv(paste0(path2,'MPF_AllPatrol_2013-2016.csv'),sep=',',header=T)
+```
+
+We first need to make sense of the shapefiles, in particular to make sure that all of them are in the same system of coordinates. Notice that the shapefiles are all converted at the CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0").
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+patr <- shapefile(paste0(path,"PATRL.shp"))
+road <- shapefile(paste0(path,"Road_20in_20PPWS.shp"))
+stream <- shapefile(paste0(path,"Stream_20in_20PPWS.shp"))
+station <- shapefile(paste0(path,"PPWS_20Outpost.shp"))
+
+
+crs(patr) <- CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+stream<-spTransform(stream, CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+road<-spTransform(road, CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+station<-spTransform(station, CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+patr2 <- shapefile(paste0(path2,"PATRL.shp"))
+road2 <- shapefile(paste0(path2,"Road_20in_20MPF.shp"))
+stream2 <- shapefile(paste0(path2,"Stream_20in_20MPF.shp"))
+station2 <- shapefile(paste0(path2, "MPF_20Outpost.shp"))
+
+stream2<-spTransform(stream2, CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+road2<-spTransform(road2, CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+crs(patr2) <- CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+station2<-spTransform(station2, CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+```
+
+# b) data description and selection 
+
+
+The next step consists in selecting the columns we're interested in, that is the ones we will need to build the occupancy dataset. We also put the begining and end of patrols in an appropriate format for further manipulations (which are so far differing between both data set).
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+smart <- smart_data %>%
+ dplyr::select(
+   Patrol.ID,
+   Patrol.Start.Date,
+   Patrol.End.Date,
+   Station,
+   Patrol.Transport.Type,
+   X,
+   Y,
+   Species, 
+   contains("Observation.Category")) %>% # select columns
+  mutate(
+    start_patrol = dmy(Patrol.Start.Date), 
+    end_patrol = dmy(Patrol.End.Date)) # appropriate format for dates
+
+
+
+smart2 <- smart_data2 %>%
+dplyr::select(
+Patrol.ID,
+Patrol.Start.Date,
+Patrol.End.Date,
+Station,
+Patrol.Transport.Type,
+X,
+Y,
+Species, 
+contains("Observation.Category")) %>% # select columns
+mutate(
+start_patrol = (Patrol.Start.Date), 
+end_patrol = (Patrol.End.Date)) # appropriate format for dates
+
+ smart$start_patrol<-as.Date(smart$start_patrol, "%m/%d/%Y")
+ smart$end_patrol<-as.Date(smart$end_patrol, "%m/%d/%Y")
+
+ 
+ smart2$start_patrol<-as.Date(smart2$start_patrol, "%m/%d/%Y")
+ smart2$end_patrol<-as.Date(smart2$end_patrol, "%m/%d/%Y")
+```
+
+
+
+In the next section, we would like to have a look to the data of the study area. To do so, we first convert the data we have into a spatial object with the same coordinates as that of the patroling sites (which are polygons). In passing, we count the number of patrols made through each means available (boat, foot, etc...).
+```{r}
+xy <- smart[,c("X","Y")]
+smart_allpoints <- SpatialPointsDataFrame(coords = xy, data = smart,
+                               proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+fullmap <- over(patr, smart_allpoints)
+fullmap %>% count(Patrol.Transport.Type)
+
+
+xy2 <- smart2[,c("X","Y")]
+smart_allpoints2 <- SpatialPointsDataFrame(coords = xy2, data = smart2,
+proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+fullmap2 <- over(patr2, smart_allpoints2)
+fullmap2 %>% count(Patrol.Transport.Type)
+```
+
+## Focus on animals mainly ungulates
+
+Now let us focus on the animal. As the direct observations of tigers were very scarce, we used the presence of their main prey as a surrogate variable for their occurence. Therefore, we selected any species of ungulates, bovidae or wild pigs. We first wanted to retain observations corresponding to detection of preys that were not moved by humans. To do so, we selected only direct sightings and signs. We displayed the sample size per species first from PPWS and second from the SWS.
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+smart_animals <- smart %>% 
+  filter(
+   # Observation.Category.0=='Animals')
+    Observation.Category.1=='Direct Sighting'| Observation.Category.1=='Sign') # uncomment this line if you want to filter and retain only direct sightings/signs
+smart_animals <- smart_animals %>% 
+  filter(
+    Species=="Banteng (Bos javanicus)" |
+               Species== "Barking Deer, Red Muntjac (Muntiacus muntjak)" |
+               Species== "Gaur (Bos Gaurus)" |
+               Species== "Sambar Deer (Rusa unicolor)" | 
+               Species== "Eld's Deer (Rucervus eldii)" |
+               Species== "Wild Pig, Wild Boar (Sus scrofa)") # filter to retain only ungulates, bovidae, wild pigs
+smart_animals %>% count(Species) # check that we have the target species
+xy <- smart_animals[,c("X","Y")]
+smart_AnimalSites <- SpatialPointsDataFrame(coords = xy, data = smart_animals, proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+
+smart_animals2 <- smart2 %>% 
+filter(
+# Observation.Category.0=='Animals')
+Observation.Category.1=='Direct Sighting'| Observation.Category.1=='Sign') # uncomment this line if you want to filter and retain only direct sightings/signs
+smart_animals2 <- smart_animals2 %>% 
+filter(
+Species=="Banteng (Bos javanicus)" |
+Species== "Barking Deer, Red Muntjac (Muntiacus muntjak)" |
+Species== "Gaur (Bos Gaurus)" |
+Species== "Sambar Deer (Rusa unicolor)" | 
+  Species== "Eld's Deer (Rucervus eldii)" |
+Species== "Wild Pig, Wild Boar (Sus scrofa)") # filter to retain only ungulates, bovidae, wild pigs
+smart_animals2 %>% count(Species) # check that we have the target species
+xy2 <- smart_animals2[,c("X","Y")]
+smart_animal2 <- SpatialPointsDataFrame(coords = xy2, data = smart_animals2, proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+```
+## Focus on illegal activity mainly snares
+Let us select illegal activity, the traps more precisely and visualize these data: 
+```{r}
+smart_activity <- smart %>% 
+  filter(
+    Observation.Category.0=='Illegal Activity',
+    Observation.Category.4=='Trap')
+xy <- smart_activity[,c("X","Y")]
+smart_poachers <- SpatialPointsDataFrame(coords = xy, data = smart_activity,
+                               proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+smart_activity2 <- smart2 %>% 
+filter(
+Observation.Category.0=='Illegal Activity',
+Observation.Category.4=='Trap')
+xy2 <- smart_activity2[,c("X","Y")]
+
+smart_poachers2 <- SpatialPointsDataFrame(coords = xy2, data = smart_activity2,
+proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+```
+
+
+#  c) build and map the occupancy grid 
+
+Let us put everything on two grids and later combining them both. We first associate each observation to an occupied site and check where co-occurence of wildlife and poachers occur. Plain dots represent the location of wildlife and black crosses represent poachers. Water streams are characterized by blue lines (not displayed in Figure 1) and roads by grey lines. We represented the ranger permanent stations and temporary campsites with stars. For each observation made (whether signs of animals or paochers), we calculate here the closest distance to road, to patrolling station and to river stream. 
+
+```{r}
+# build the grid 
+# create a grid that bounds the study area in other words that covers the full distribution of poacher signs. 
+#
+bb<-bbox(patr) # this geographic coordinates of the patroling shape file are: longitude (xmin=106.5188, xmax=107.1647, ymin=12.47707, ymax=13.02043 ) which corresponds to a maximum distance of 54km or a 46 km by 28 km grid 
+cs<-c(0.1, 0.1) # this is the resolution of the patrl shapefile 
+cc <- bb[, 1] + (cs/2)
+cd <- ceiling(diff(t(bb))/cs)  # number of cells per direction
+grd <- GridTopology(cellcentre.offset=cc, cellsize=cs, cells.dim=cd)
+
+
+
+sp_grd <- SpatialGridDataFrame(grd,
+                               data=data.frame(id=1:prod(cd)),
+                               proj4string=CRS(proj4string(patr)))
+
+smart_grid <- SpatialGrid(grd)
+
+
+
+polys <- as.SpatialPolygons.GridTopology(grd) 
+proj4string(polys) <- CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+centers <- coordinates(polys)
+#points(centers, col="red", pch=16)
+plot(smart_grid, main ="PPWS")
+plot(smart_AnimalSites, add=T, pch=16)
+plot(smart_poachers, add=T, pch=3)
+plot(road, add=T, col="grey")
+#plot(stream, add=T, col="blue")
+plot(station, add=T, pch=8)
+
+df<-over(polys,stream)
+
+df$LENGTH[is.na(df$LENGTH)==TRUE]<-0
+streamlength <- df$LENGTH
+
+
+
+# uncomment the following line to calculate the distance to road (to save time just use the predefined vector DistToRoad below)
+#DistToStream<-NULL
+#DistToRoad<-NULL
+#for(i in 1:nrow(centers))
+#{  
+  #l<-dist2Line(centers[i,], stream, distfun=distHaversine)[1]  
+  #r<-dist2Line(centers[i,], road)[1]
+  #DistToRoad <- c(DistToRoad,r)
+  #DistToStream <- c(DistToStream,r)
+#}
+
+
+
+
+# DistToStation<-NULL
+# 
+# for(i in 1:nrow(centers))
+# {  
+#   l<-dist2Line(centers[i,], station)[1]  
+#   #r<-dist2Line(centers[i,], road)[1]
+#   DistToStation <- c(DistToStation,l)
+#   #DistToStream <- c(DistToStream,r)
+# }
+
+
+DistToStation <- c(30791.692111, 24006.793438, 18759.915195, 13404.757881,  8217.937610, 11580.430810, 20882.363116, 24636.780895, 15330.385008,
+  9080.718822,  3723.421533,  1630.199643,  7086.042683, 17406.475427, 15040.471793, 11768.433693,  1446.146956,  1626.517705, 4620.782415,  3649.206393, 10562.836816,  7829.006935,  1755.059310,  1168.281391,   585.669201,     7.224508,   212.360046, 3261.691807, 11880.363507,  7164.177552,  2882.751076,  1402.491171,  5912.361637,  3224.486885,  7108.188918, 12476.207483, 1909.889418,  1457.862997,  4404.300171,  7546.417244,  7727.457984,  8167.702037)
+
+
+
+ DistToRoad<-c(28470.98983, 19403.33774, 12080.62050,  8585.18300,  3485.68593, 11282.34092, 20370.00738, 20026.34957, 13226.93722,  4935.65956, 1415.50920,   548.60028,  8048.67626, 16961.62186,  9714.90129,  4859.34844,   697.52490,  6089.36955,  3174.15239,  2535.48533,  9573.08896,  5243.79253,  2276.00314,  9096.38700,  2583.91489,    77.21720,  4609.23605,  3293.19063,  2004.87745,  2462.59855, 40.26665,   667.78384,  3353.72234,  2039.86728,  5421.26747,  4014.11217,  1940.55816,    36.35545,  2627.62993,  3012.23888, 2150.63044,  8019.38451)
+
+# same thing for SWS study area
+ 
+bb<-bbox(patr2) 
+cs<-c(0.10, 0.10) 
+cc <- bb[, 1] + (cs/2)
+cd <- ceiling(diff(t(bb))/cs)  # number of cells per direction
+grd2 <- GridTopology(cellcentre.offset=cc, cellsize=cs, cells.dim=cd)
+
+# this spatial grid data-frame is needed later for the sppolt function that provides dynamic colored map of the expected species distribution
+sp_grd2 <- SpatialGridDataFrame(grd2,
+                               data=data.frame(id=1:prod(cd)),
+                               proj4string=CRS(proj4string(patr2)))
+
+smart_grid2 <- SpatialGrid(grd2)
+# plot the grid 
+
+
+polys2 <- as.SpatialPolygons.GridTopology(grd2) 
+proj4string(polys2) <- CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+
+plot(smart_grid2, main ="SWS")
+plot(smart_animal2, add=T, pch=16)
+plot(smart_poachers2, add=T, pch= 3)
+plot(road2, add=T, col="grey")
+#plot(stream2, add=T, col="blue")
+plot(station2, add=T, col="red", pch=1)
+
+
+centers2 <- coordinates(polys2)
+#points(centers2, col="red", pch=16)
+
+df2<-over(polys2,stream2)
+
+df2$LENGTH[is.na(df2$LENGTH)==TRUE]<-0
+streamlength2 <- df2$LENGTH
+
+
+# uncomment the following line to calculate the distance to road (to save time just use the predefined vector DistToRoad below)
+#DistToStream<-NULL
+
+# DistToRoad2<-NULL
+# 
+# for(i in 1:nrow(centers2))
+# {  
+#   
+#   r2<-dist2Line(centers2[i,], road2)[1]
+#   DistToRoad2 <- c(DistToRoad2,r2)
+# }
+
+DistToRoad2 <- c(14734.0677,  9142.4231,  7109.6824,  8393.3763, 15446.7631, 15802.7682, 18559.2598,  7443.1685,  1198.7680,  1555.2910,  3490.8576, 5550.5012,  4854.7566,  8960.3871,  4214.5244,  1356.5697,  2378.7269,  1329.8075,  4727.3093,  5750.6648,  6730.0388,  2539.4967, 760.1405,  2426.0919,  1225.3026,  3262.0905, 10294.2685, 15971.4548,   311.2909,   252.9835,   925.8761,  4125.7572,  2520.9452, 4715.4527, 14421.3621,   317.6185,  3306.6249,  1549.0970,  3330.4911,  1463.9356,  6120.4305, 15890.9265,  1751.0739,  2536.7525, 4935.1573,   286.3034,  2331.6609, 12347.4205, 20121.6975, 10634.7618,  3794.5089,   220.2991,  1804.6447,  1270.3573,  9486.6199, 20122.9947)
+
+
+
+# DistToStation2<-NULL
+# 
+# for(i in 1:nrow(centers2))
+# {  
+#   l2<-dist2Line(centers2[i,], station)[1]  
+#   #r<-dist2Line(centers[i,], road)[1]
+#   DistToStation2 <- c(DistToStation2,l2)
+#   #DistToStream <- c(DistToStream,r)
+# }
+
+DistToStation2 <- c(49712.7755, 51830.6673, 56004.5776, 61819.4460, 68860.8126, 76792.0270, 85365.4229, 38707.8747, 41393.7831, 46515.8408, 53377.2796,
+ 61397.6937, 70180.8501, 79474.2637, 27749.5828, 31389.0477, 37891.0688, 46058.8928, 55157.3906, 64795.6894, 74324.7210, 16928.4854,22402.9776, 30863.1800, 40478.4013, 50594.3533, 58841.6541, 67105.3806,  6920.7401, 16226.6081, 26550.2878, 36195.7745, 43360.0708,51823.5484, 61048.2372,  2477.0463, 12797.9746, 21053.2747, 27887.4849, 36713.7524, 46409.0905, 56528.0807,   961.3044,  6986.1269, 12468.6345, 22137.5308, 32565.0589, 43205.3832, 53932.7024,  2985.9238,  3557.6160, 10605.1458, 21147.1947, 31903.6123, 42712.7492, 53542.6849)
+
+```
+
+
+
+
+
+A key aspect of designing occupancy studies is the number of repeated surveys that should be conducted (MacKenzie et al. 2005). After investigating the sensitivity of estimates to different spatial scale of the site, total number of sites along with the sensitivity of estimates to number of repeated measures and primary occasions.   
+
+
+First, we are determining the number of surveys required to have a relatively high probability of detecting the species at a site if it was present, and a low probability of declaring the species as falsely absent in order to have a relatively low bias in occupancy estimates, extinction estimates of preys and colonisation estimates of poachers.
+
+For a 4 years study, we looked at: with monthly repated samples over trimesters, monthly repeated samples over years, trimester repeated samples over years.
+
+The one that gave the highest detection probability was the one considering months as secondary occasions and years as primary  
+
+
+Note that MacKenzie et al. (2005) concluded from a simular simulation study conducted on a static single species occupancy model that for the monitoring a rare species, it is more efficient to survey more sampling units with less repeated measures. Our case is different as it involves several species difficult to detect, one of each (poachers) is likely abundant species while the others are rare species (tiger preys).
+
+The results of our simulation study showed that it is better to sample few sites many times. So we focused on increasing the number of repeated measure rather than the number of spatial sites.  
+
+We benefit from the results of the simulation study above to design the occupancy tables: 35 sites in PPWS study site and 46 sites in MPF with secondary occasions defined every month and primary occasion set every year. This means that if both species were dected in the same site in a given month but not necessarily at the same days, we consider that the both co-occurred without providing information on the order of occurence. 
+
+```{r}
+ PixPoachers <-NULL
+ PixAnimals <-NULL
+ listcooc<-NULL
+ datename<-NULL
+ par(mfrow = c(3,3))
+ primary<-unique(c(year(smart_animals$start_patrol), year(smart_animals$end_patrol)))
+ # first case we define the secondary occasions on a monthly period in which colonisation and extinction are both constant 
+ #secondary<-unique(c(months(smart_poachers$start_patrol), months(smart_poachers$end_patrol)))
+ 
+ # second case we define the secondary occasions on a trimestrial period in which colonisation and extinction are both constant 
+ secondary<-c("January", "February" , "March" , "April",  "May", "June", "July", "August",  "September", "October", "November", "December")
+
+  n.primary<-4 
+  n.secondary<-12
+  # We define an occupancy table with sites sampled monthly over 4 years
+  patchocc<-array(0, dim=c((nrow(centers)+nrow(centers2)), length(primary), length(secondary)))
+ 
+  smart_animals2$start_patrol<-as.Date(smart_animals2$start_patrol, "%m/%d/%Y")
+  smart_animals2$end_patrol<-as.Date(smart_animals2$end_patrol, "%m/%d/%Y")
+  smart_activity2$start_patrol<-as.Date(smart_activity2$start_patrol, "%m/%d/%Y")
+  smart_activity2$end_patrol<-as.Date(smart_activity2$end_patrol, "%m/%d/%Y")
+
+ 
+ 
+ #patchprey<-array(0, dim=c(dim(list_pixel)[1], length(primary)*length(secondary), length(primary)))
+ inc <- 0
+ inc1 <- 0
+ count <- 0
+ tempcov <-NULL
+ tempcov2 <-NULL
+ for(y in sort(primary))
+ {
+   inc1<-inc1+1
+   inc2<-0
+    
+   for(m in secondary)
+   {
+      inc2<- inc2 + 1
+      inctrim<-ceiling(inc2/3)
+      
+       smart_points <- smart %>%
+  filter((year(start_patrol)==y | year(end_patrol)==y) & (months(start_patrol)==m | months(end_patrol)==m)) # 
+  #patrolling effort in PPWS study area
+  if(dim(smart_points)[1] > 0)
+  {  
+    xypts <- smart_points[,c("X","Y")]
+   
+    smart_pts <- SpatialPointsDataFrame(coords = xypts, data = smart_points, proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+   
+    list_pixel = over(smart_pts, geometry(polys),  returnList = FALSE)
+    
+    lpix<-table(list_pixel)
+    
+    
+    # here we define a covariate  for the patrolling effort defined as the frequency of survey conducted on each site in a given month regardless of what they observed and of the identity of the ranger 
+    # notice that we standardised the covariate at each occasion to better compare spatial effort across time 
+    timepatreffort<-rep(0, nrow(centers))
+    timepatreffort[as.numeric(names(lpix))]<-lpix/max(lpix)
+    
+    tempcov<-cbind(tempcov, month=timepatreffort)
+    colnames(tempcov)[ncol(tempcov)]<-paste0(m,"_",y)
+  } else
+  {
+    noeffort<-rep(0, nrow(centers))
+    tempcov<-cbind(tempcov, month=noeffort)
+    colnames(tempcov)[ncol(tempcov)]<-paste0(m,"_",y)
+  }
+
+    # Patrolling effort in SWS case study  
+       smart_points2 <- smart2 %>%
+  filter((year(start_patrol)==y | year(end_patrol)==y) & (months(start_patrol)==m | months(end_patrol)==m)) # 
+  
+  if(dim(smart_points2)[1] > 0)
+  {  
+    xypts2 <- smart_points2[,c("X","Y")]
+   
+    smart_pts2 <- SpatialPointsDataFrame(coords = xypts2, data = smart_points2, proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+   
+    list_pixel2 = over(smart_pts2, geometry(polys2),  returnList = FALSE)
+    
+    lpix2<-table(list_pixel2)
+    
+    
+    # here we determine the value of the patrolling effort in terms of number of time agent went our prospecting each site in a given month regardless of what they observed and of the identity of the ranger 
+    # notice that we standardise the covariate at each occasion to better compare spatial effort across time 
+    timepatreffort2<-rep(0, nrow(centers2))
+    timepatreffort2[as.numeric(names(lpix2))]<-lpix2/max(lpix2)
+    
+    tempcov2<-cbind(tempcov2, month=timepatreffort2)
+    colnames(tempcov2)[ncol(tempcov2)]<-paste0(m,"_",y)
+  } else
+  {
+    noeffort2<-rep(0, nrow(centers2))
+    tempcov2<-cbind(tempcov2, month=noeffort2)
+    colnames(tempcov2)[ncol(tempcov2)]<-paste0(m,"_",y)
+  }
+      
+    # animals and poachers occurence in PPWS and SWS
+    
+         smart_animalsYears <- smart_animals %>%
+     filter((year(start_patrol)==y | year(end_patrol)==y) & (months(start_patrol)==m | months(end_patrol)==m)) # filter to retain only the year and the month of prey presence regardless ofhow primary and secondary occasions are defined
+     
+     smart_poachersYears <- smart_activity %>%
+     filter((year(start_patrol)==y | year(end_patrol)==y) & (months(start_patrol)==m | months(end_patrol)==m))  # filter to retain only the year and the month of poacher presence regardless of how primary and secondary occasions are defined
+     
+     
+    smart_animalsYears2 <- smart_animals2 %>%
+  filter((year(start_patrol)==y | year(end_patrol)==y) & (months(start_patrol)==m | months(end_patrol)==m)) # filter to retain only the year and the month of prey presence regardless ofhow primary and secondary occasions are defined
+  
+  smart_poachersYears2 <- smart_activity2 %>%
+  filter((year(start_patrol)==y | year(end_patrol)==y) & (months(start_patrol)==m | months(end_patrol)==m))  # filter to retain only the year and the month of poacher presence regardless of how primary and secondary occasions are defined
+
+     
+  
+    # presence of animals in PPWS
+     if(dim(smart_animalsYears)[1] > 0) 
+     { 
+      xyPrey <- smart_animalsYears[,c("X","Y")]
+      
+      smart_animalsmap <- SpatialPointsDataFrame(coords = xyPrey, data = smart_animalsYears, proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+      
+      #plot(smart_animalsmap, add=T)
+      # this way of using the over function : it retrives a table with the pixel number in rows and the data frame attribute as columns.       The non na rows show the grid cell that hold a spatial point. Empty pixels retrieve a row of NAs  
+      list_pixelAnimals = over(geometry(polys), smart_animalsmap,  returnList = FALSE)
+      # We determine which sites (rows) the poachers (assigned with a 1) are every month (column) over 4 years (Third dimension)
+      PixAnimals<-which(!is.na(list_pixelAnimals[,1]))
+      # here it retrieves a table of length data point at this time occiasion and the pixel number that overlap with spatial location of the data points. If some spatial points fall outside the grid it retrieves a NA 
+      #PixAnimals<-over(smart_animalsYears, geometry(polys), returnList = FALSE)
+      patchocc[PixAnimals,inc1,inc2]<-2
+      
+     }
+   # Presence of poachers in SWS
+   if(dim(smart_animalsYears2)[1] > 0) 
+     { 
+      xyPrey2 <- smart_animalsYears2[,c("X","Y")]
+  
+      smart_animalsmap2 <- SpatialPointsDataFrame(coords = xyPrey2, data = smart_animalsYears2, proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+      #plot(smart_animalsmap, add=T)
+      # this way of using the over function : it retrives a table with the pixel number in rows and the data frame attribute as columns.       The non na rows show the grid cell that hold a spatial point. Empty pixels retrieve a row of NAs  
+      list_pixelAnimals2 = over(geometry(polys2), smart_animalsmap2,  returnList = FALSE)
+      # We determine which sites (rows) the poachers (assigned with a 1) are every month (column) over 4 years (Third dimension)
+      PixAnimals2<-which(!is.na(list_pixelAnimals2[,1]))
+      # here it retrieves a table of length data point at this time occiasion and the pixel number that overlap with spatial location of the data points. If some spatial points fall outside the grid it retrieves a NA 
+      #PixAnimals<-over(smart_animalsYears, geometry(polys), returnList = FALSE)
+      patchocc[(nrow(centers)+PixAnimals2),inc1,inc2]<-2
+     }
+    
+     if(dim(smart_poachersYears)[1] > 0) 
+     {  
+      xyPoach <- smart_poachersYears[,c("X","Y")]
+     
+      smart_poachersYears <- SpatialPointsDataFrame(coords = xyPoach, data = smart_poachersYears,
+                                  proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+   
+      list_pixelPoachers = over(geometry(polys), smart_poachersYears, returnList = FALSE)
+      PixPoachers<-which(!is.na(list_pixelPoachers[,1]))
+      #We determine which sites (rows) the poachers (assigned with a 1) are every month (column) over 4 years (Third dimension)
+      #PixPoachers<-over(smart_poachersYears, geometry(polys), returnList = FALSE)
+      patchocc[PixPoachers,inc1,inc2] <- 1
+      
+     }
+  
+      if(dim(smart_poachersYears2)[1] > 0) 
+     {  
+      xyPoach2 <- smart_poachersYears2[,c("X","Y")]
+     
+      smart_poachersYears2 <- SpatialPointsDataFrame(coords = xyPoach2, data = smart_poachersYears2,
+                                  proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+   
+     
+      list_pixelPoachers2 = over(geometry(polys2), smart_poachersYears2, returnList = FALSE)
+      PixPoachers2<-which(!is.na(list_pixelPoachers2[,1]))
+      #We determine which sites (rows) the poachers (assigned with a 1) are every month (column) over 4 years (Third dimension)
+      #PixPoachers<-over(smart_poachersYears, geometry(polys), returnList = FALSE)
+      patchocc[(nrow(centers)+PixPoachers2),inc1,inc2] <- 1
+      
+      }
+  
+    # occurence of both in PPWS
+   if(dim(smart_poachersYears)[1] > 0 & dim(smart_animalsYears)[1] > 0)
+      {
+         
+         cooc<-PixPoachers[which(PixPoachers %in% PixAnimals == TRUE)]
+          #We determine which sites (rows)  both species (assigned with a 3) are every month (column) over 4 years (Third dimension)
+          patchocc[cooc,inc1,inc2]<- 3
+          #We determine which sites (rows)  both species (assigned with a 3) are every trimester (column) over 4 years   (Third dimension)
+         
+          listcooc<-c(listcooc, cooc)
+          if(length(cooc) > 0) datename <- c(datename,paste0(y,"_",m))
+      }
+
+     
+    # occurence of both in SWS
+      if(dim(smart_poachersYears2)[1] > 0 & dim(smart_animalsYears2)[1] > 0)
+      {
+         
+         cooc2<-PixPoachers2[which(PixPoachers2 %in% PixAnimals2 == TRUE)]
+          #We determine which sites (rows)  both species (assigned with a 3) are every month (column) over 4 years (Third dimension)
+          patchocc[(nrow(centers)+cooc2),inc1,inc2]<- 3
+          #We determine which sites (rows)  both species (assigned with a 3) are every trimester (column) over 4 years   (Third dimension)
+         
+          
+      }
+  
+      
+
+   }
+   
+ }
+# Binding the covariates specific to PPWS and SWS together 
+tempcov<- rbind(tempcov, tempcov2)
+roadcov<- c(DistToRoad, DistToRoad2)
+streamcov<- c(streamlength, streamlength2)
+stationcov<-c(DistToStation, DistToStation2)
+      
+```
+
+We also display the distribution of sites unoccupied (0), occupied by poachers (1), occupied by animal preys (3), occupied by both (4).
+```{r}
+#cbind(listcooc, datename)
+# here we redefine the monthly table
+
+list_pixelpatr <- over(geometry(polys), patr ,returnList = FALSE)
+list_pixelpatr2 <-  over(geometry(polys2), patr2 ,returnList = FALSE)
+list_pixel<-rbind(list_pixelpatr, list_pixelpatr2)
+tempcov<-tempcov[which(!is.na(list_pixel[,1])),]
+roadcov<- roadcov[which(!is.na(list_pixel[,1]))]
+streamcov<- streamcov[which(!is.na(list_pixel[,1]))]
+stationcov<-stationcov[which(!is.na(list_pixel[,1]))]
+
+patchocc1<-patchocc
+patchocc2<-patchocc[which(is.na(list_pixel[,1])),,]
+patchocc<-patchocc[which(!is.na(list_pixel[,1])),,]
+OccupancyState<-patchocc
+dist<-table(OccupancyState)
+dist
+
+sp_grd@data$survey<-rep(0.1,nrow(sp_grd))
+ # 
+ list_pixelpatr <- over(geometry(polys), patr ,returnList = FALSE)
+ sp<-sp_grd@data$id[which(is.na(list_pixelpatr[,1]))]
+# 
+ for (i in which(is.na(list_pixelpatr[,1]))){
+   inc<-inc+1
+   sp_grd@data$survey[sp_grd@data$id[i]]<-0.9
+  #   
+  }
+
+ 
+ at_regular = c(0,0.5,1)
+
+ p1 = spplot(sp_grd, c("survey"), col.regions = c("white", "black", "grey"), at = at_regular, main = c("PPWS"), col =  c("white", "grey"), panel = function(...) {
+         panel.gridplot(..., border="black")
+         sp.points(smart_AnimalSites, cex=1.4, col="green4", pch=4)
+         sp.points(smart_poachers, cex=1.4, col="red", pch=4)
+         sp.points(station, cex=1.7, col="black", pch=1)
+          sp.lines(road, cex=1, col="black")
+    #     sp.lines(stream, cex=1, col="blue")
+       }) 
+ 
+ 
+ 
+ sp_grd2@data$survey<-rep(0.1,nrow(sp_grd2))
+ # 
+ list_pixelpatr2 <- over(geometry(polys2), patr2 ,returnList = FALSE)
+ sp<-sp_grd2@data$id[which(is.na(list_pixelpatr2[,1]))]
+# 
+ for (i in which(is.na(list_pixelpatr2[,1]))){
+   inc<-inc+1
+   sp_grd2@data$survey[sp_grd2@data$id[i]]<-0.9
+  #   
+  }
+
+
+ at_regular = c(0,0.5,1)
+
+ p2 = spplot(sp_grd2, c("survey"), col.regions = c("white", "black", "grey"), at = at_regular, main = c("SWS"), col =  c("white", "grey"), panel = function(...) {
+         panel.gridplot(..., border="black")
+         sp.points(smart_animal2, cex=1, col="green4", pch=4)
+         sp.points(smart_poachers2, cex=1, col="red", pch=4)
+         sp.points(station2, cex=1.5, col="black", pch=1)
+         sp.lines(road2, cex=0.3, col="black")
+        # sp.lines(stream2, cex=0.3, col="blue")
+       }) 
+
+```
+
+
+# d) A dynamic two-species patch-occupancy model, formulated as a HMM (Gimenez et al. 2014).
+
+For now, we adopt the Waddle parameterization for occupancy and detection, and the MacKenzie parameterization for transitions (see pages 264-265 in MacKenzie et al. 2006). Hereafter A stands for the poacher and B stands for the prey.
+
+
+## The model
+
+The states are:
+
+* U = unoccupied  
+* OA = only poachers present  
+* OB = only prey species are present  
+* OAB = both species present  
+
+The observations are: 
+
+* 1 = none species observed  
+* 2 = only A is observed  
+* 3 = only B is observed  
+* 4 = both species are observed.  
+
+The model is completely specified with 3 pieces:  
+
+* Vector of initial state probabilities $\Pi = \Pi_1 \Pi_2$
+
+$$\Pi_1 = \left[\begin{array}
+{rrrr}
+1-\psi_W & \psi_W \\
+\end{array}\right]
+$$
+
+
+$$\Pi_2 = \left[\begin{array}
+{rrrr}
+1-\psi_{P/\bar{W}} & \psi_{P\bar{W}} & 0 & 0 \\
+0 & 0 & 1-\psi_{P/W} &\psi_{P/W} \\
+\end{array}\right]
+$$
+
+* Transition matrix $A$   
+
+$$A = \left[\begin{array}
+{rrrr}
+1-\gamma_{P}-\gamma_{W}+\gamma_{WP} & \gamma_{P}-\gamma_{WP} & \gamma_{W}-\gamma_{WP} & \gamma_{WP} \\
+\epsilon_{P/\bar{W}} & 1-\epsilon_{P/\bar{W}}-\omega_{PW}-\gamma_{W/P}& \omega_{PW} & \gamma_{W/P} \\
+\epsilon_{W/\bar{P}} & \omega_{WP} & 1-\epsilon_{W/\bar{P}}-\omega_{WP}-\gamma_{P/W} & \gamma_{P/W} \\
+\epsilon_{WP} & \epsilon_W-\epsilon_{WP} & \epsilon_P-\epsilon_{WP} & 1-\epsilon_P-\epsilon_W+\epsilon_{WP}
+\end{array}\right]
+$$
+
+* Observation matrix  
+
+$$\mathbf{B} = \left[\begin{array}
+{rrrr}
+1 & 0 & 0 & 0 \\
+1-p_P & p_P & 0 & 0 \\
+1-p_W & 0 & p_W & 0 \\
+1-p_{WP} & 0 & 0 & p_{WP}
+\end{array}\right]
+$$
+
+
+## Calculate the deviance for a multi-species patch occupancy model
+
+First we loaded the functions showing all the effects tested on the detection, occupancy and transition probabilities. We also load the likelihood functions for the models testing those various effects
+```{r}
+source('Detection_Effects.R')
+source('Occupancy_Effects.R')
+source('Transition_Effects.R')
+source('Likelihood_detection.R')
+source('Likelihood_occupancy.R')
+source('Likelihood_transition.R')
+```
+
+We define the logprot function to avoid the log likelihood to reach infinite values
+```{r}
+logprot <- function(v){
+# avoid explosion of log(0)
+eps <- 2.2204e-016
+u <- log(eps) * (1+vector(length=length(v)))
+index <- (v>eps)
+u[index] <- log(v[index])
+u
+}
+# here we define the number of iterations for computing the maximum likeliood of each model (to avoid local minima)
+niter<-4
+```
+
+
+## Effects on the detection 
+```{r}
+effectlist1<-c("cst detection","no prey effects on detection of poachers", "no poacher effects on detection of preys","species interaction effects on detection","spatial effect of patroling effort on detection", "time effect of patroling effort on detection", "spatio-temporal effect of patroling effort on detection", "distance to road effect on detection", "stream length effect on detection", "distance to station effect on detection")
+ npar<-vector(mode="logical", length=length(effectlist1))
+ AICc<-vector(mode="logical", length=length(effectlist1))
+ 
+ devModel1<-vector(mode="logical", length=length(effectlist1))
+ e <- 0
+ 
+ for(P_effects in effectlist1)
+ {
+ e<-e+1
+ R = nrow(patchocc) # number of sites
+ n.states <- 4 # nb states
+ n.obs <- 4 # nb events
+ 
+ n.primary <- length(primary) # nb primary occasions
+ n.secondary <- length(secondary) # nb secondary occasions
+ J <- n.secondary
+ K <- n.primary
+ N <- n.primary * n.secondary
+ 
+ 
+ 
+
+ 
+ #now reshape array in matrix with secondary occ within primary occ:
+ obs = matrix(NA,nrow=R,ncol=n.primary*n.secondary)
+ count = 1
+ for (i in 1:n.primary){
+ for (j in 1:n.secondary){
+ obs[,count] <- patchocc[,i,j]
+ count = count+1
+ }
+ }
+ 
+ 
+ 
+ eff = rep(1,R) # nb sites with this particular history
+ 
+ #coveff<- patreffort
+ garb = obs[,1] # initial states
+ data = t(obs) # transpose
+ 
+ # primary and secondary occasions
+ primaryseq = seq(J,J*K,by=J)
+ secondaryseq = 1:(J*K)
+ 
+ 
+  binit = runif(32) # generate initial values for parameters 
+
+ 
+
+ dev<- dev_2spocc_dyn(binit, data, eff, tempcov, roadcov, stationcov, streamcov, garb,R,primaryseq,secondaryseq,n.states, P_effects)
+ 
+ 
+ for(iteration in 1:niter)
+ {
+   binit = runif(32) # we reset the intial value at each loop (notice that we drawn the number of coefficients from the most parameterized model (time and space effects of the patrolling effort covariate) )
+ 
+   res = optim(binit,dev_2spocc_dyn,NULL, data,eff, tempcov, roadcov, stationcov, streamcov, garb,R,primaryseq,secondaryseq,n.states, P_effects, method="BFGS",control=list(trace=0, REPORT=1), hessian = FALSE)
+   if( res$value < dev) # if the current deviance is smaller than the previous one we set the minimum deviance   dev to this new value
+   {
+     dev<-res$value
+      b = res$par
+   }
+   
+ }
+  
+
+ # Here we subtract the number of parameters that were not optimized (i.e equal to the inital values) and substract them from the number of parameters of the model
+ checkpar<-b-binit
+ npar[e]<-length(checkpar[-c(which(checkpar==0))])
+ devModel1[e]<-dev
+ AICc[e]<- 2*npar[e] + 2*dev + (2*npar[e]^2 + 2*npar[e])/(R-npar[e]-1)
+ 
+ }
+ AICdet<-AICc
+ npardet<- npar 
+ Best_detection_model<-effectlist1[AICc==min(AICc)]
+ Best_detection_model
+```
+
+## Effects on occupancy given the best effects selected on detection
+
+```{r}
+# this is the list of effects tested on the occupancy probabilities
+effectlist2<-c("no prey effect on occupancy of poachers", "species interaction effects on occupancy", "spatial effect of patroling effort on occupancy", "spatial effect of patroling effort on poacher occupancy only", "spatial effect of patroling effort on poacher occupancy given presence/absence of prey", "distance to road on occupancy", "stream length effect on occupancy", "distance to station effect on occupancy")
+# as the number of parameter vary with the type of hypothesis that we test we defin a vector with the number of parameters per model
+npar<-vector(mode="logical", length=length(effectlist2))
+# we define a vector to store the AICc of each model 
+AICc<-vector(mode="logical", length=length(effectlist2))
+# we define a vector to store the deviance of each model
+devModel2<-vector(mode="logical", length=length(effectlist2))
+
+e <- 0
+# we loop over the candidate models with the effects tested on the occupancy
+for(P_effects in effectlist2)
+{
+e<-e+1
+R = nrow(patchocc) # number of sites
+n.states <- 4 # nb states
+n.obs <- 4 # nb events
+
+n.primary <- length(primary) # nb primary occasions
+n.secondary <- length(secondary) # nb secondary occasions
+J <- n.secondary
+N <- n.primary * n.secondary
+K <- n.primary 
+
+#binit = b[1:npar[e]]
+
+#now reshape array in matrix with secondary occ within primary occ:
+obs = matrix(NA,nrow=R,ncol=n.primary*n.secondary)
+count = 1
+for (i in 1:n.primary){
+for (j in 1:n.secondary){
+obs[,count] <- patchocc[,i,j]
+count = count+1
+}
+}
+
+
+
+eff = rep(1,R) # nb sites with this particular history
+
+#coveff<- patreffort
+garb = obs[,1] # initial states
+data = t(obs) # transpose
+
+# primary and secondary occasions
+primaryseq = seq(J,J*K,by=J)
+secondaryseq = 1:(J*K)
+
+#binit = runif(32) drawn random initial values or to avoid local minima fix the parameter to the range of values from the best model selected in the selction above "effects of detection" as in the following line
+
+ bparam<-c(0.41, 0.07, 0.07, 0.04, 0.18, 0.18, 0.14, 0.40, 0.18, 0.14, 0.18, 0.05, 0.14, 0.86, 0.05, 0.16, 0.10, 0.05, 0.1, 0.1, 0.05, rep(0.5, 20))
+binit<- log(bparam/(1-bparam))
+
+
+
+  res = optim(binit,dev_2spocc_dyn2,NULL, data,eff, tempcov, roadcov, stationcov, streamcov, garb,R,primaryseq,secondaryseq,n.states, P_effects, method="BFGS",control=list(trace=0, REPORT=1), hessian = FALSE)
+    dev<-res$value
+    b = res$par  
+# we store the final min deviance to the vector of models' deviance  
+  devModel2[e]<-dev
+
+
+ 
+# Here we subtract the number of parameters that were not optimized (i.e equal to the inital values) and substract them from the number of parameters of the model
+checkpar<-b-binit
+npar[e]<-length(checkpar[-c(which(checkpar==0))])
+AICc[e]<- 2*npar[e] + 2*dev + (2*npar[e]^2 + 2*npar[e])/(R-npar[e]-1)
+
+
+}
+
+AICocc<-AICc
+nparocc<- npar 
+Best_occ_model<-effectlist2[AICc==min(AICc)]
+```
+
+
+
+
+## Effects on transition given the best effects already selected on the occupancy and detection
+
+Here we estimate the parameter only from the best fitted model.
+
+```{r}
+# we keep the list just for the skae of simplicity as all parameters are stored in list (each element corresponding to a candidate model). However, notice that we only estimate parameters for the best model ("no prey effect")
+effectlist<-c("no prey effect", "poachers performance", "prey counteracting behaviour", "spatial effects of ranger on poachers", "temporal effects of ranger on poachers", "space", "time cov", "both", "both delay")
+
+
+npar<-vector(mode="logical", length=length(effectlist))
+AICc<-vector(mode="logical", length=length(effectlist))
+devModel3<-vector(mode="logical", length=length(effectlist))
+
+    mle_epsilonB<-list()
+    mle_epsilonA<-list()
+    mle_gammaAB<-list()
+    mle_gammaB<-list()
+    mle_gammaA<-list()
+    mle_epsilonAB<-list()
+    mle_trans42<- list()  
+    mle_nuA<- list()
+    mle_omegaAB<-list()
+    
+    mle_trans12<- list()
+    mle_etaA<- list()
+    mle_gammaAB<-list()
+    mle_trans43<- list()
+    mle_nuB<- list()
+    mle_omegaBA<- list()
+   
+    mle_trans13<- list()
+    mle_etaB<- list()
+
+
+e<-0
+for(P_effects in effectlist)
+{
+  e<-e+1
+  set.seed(7)
+  R = nrow(patchocc) # number of sites
+  n.states <- 4 # nb states
+  n.obs <- 4 # nb events
+
+n.primary <- length(primary) # nb primary occasions
+n.secondary <- length(secondary) # nb secondary occasions
+J <- n.secondary
+N <- n.primary * n.secondary
+K <- n.primary
+
+
+
+#now reshape array in matrix with secondary occ within primary occ:
+obs = matrix(NA,nrow=R,ncol=n.primary*n.secondary)
+count = 1
+for (i in 1:n.primary){
+for (j in 1:n.secondary){
+obs[,count] <- patchocc[,i,j]
+count = count+1
+}
+}
+
+# primary and secondary occasions
+primaryseq = seq(J,J*K,by=J)
+secondaryseq = 1:(J*K)
+
+eff = rep(1,R) # nb sites with this particular history
+
+#coveff<- patreffort
+garb = obs[,1] # initial states
+data = t(obs) # transpose
+
+
+# here we fixed thed initial values again to avoid local minima without having to run several times the same model
+ bparam<-c(0.41, 0.07, 0.07, 0.04, 0.18, 0.18, 0.14, 0.40, 0.18, 0.14, 0.18, 0.05, 0.14, 0.86, 0.05, 0.16, 0.10, 0.05, 0.1, 0.1, 0.05)
+binit<- log(bparam/(1-bparam))
+
+
+  res = optim(binit,dev_2spocc_dyn3,NULL, data,eff, tempcov, garb,R,primaryseq,secondaryseq,n.states, P_effects, method="BFGS",control=list(trace=0, REPORT=1), hessian = FALSE)
+    
+    dev<-res$value
+    b = res$par
+    checkpar<-b-binit
+    
+
+   # we store the final min deviance to the vector of models' deviance  
+    devModel3[e]<-dev
+
+    # we calculate the hessian matrix from the best model to later obtain the confidence intervals
+    if(P_effects=="no prey effect")  
+  hessianfinal<-optimHess(b,dev_2spocc_dyn3,NULL, data,eff,tempcov, garb,R,primaryseq,secondaryseq,n.states, P_effects, control=list(trace=0, REPORT=1))
+
+    
+   
+    npar[e]<-length(checkpar[-c(which(checkpar==0))])
+    AICc[e]<- 2*npar[e] + 2*dev + (2*npar[e]^2 + 2*npar[e])/(R-npar[e]-1)
+
+ 
+   
+
+    if(P_effects=="no prey effect")
+    {
+    #   
+    bbest <- res$par
+    mle_psiB <- 1/(1+exp(-(b[1])))
+    mle_psiAb<- 1/(1+exp(-(b[2])))
+    mle_psiAB <- 1/(1+exp(-(b[2])))
+
+      
+    ResultEffect <- EffectsTransition(P_effects,b)
+    mle_epsilonAB[[e]]<- ResultEffect[[1]]
+    mle_trans42[[e]]<- ResultEffect[[2]]
+    mle_nuA[[e]]<- ResultEffect[[3]]
+    mle_omegaAB[[e]]<- ResultEffect[[4]]
+    
+    mle_trans12[[e]]<- ResultEffect[[5]]
+    mle_etaA[[e]]<- ResultEffect[[6]]
+    mle_gammaAB[[e]]<- ResultEffect[[7]]
+    mle_trans43[[e]]<- ResultEffect[[8]]
+    mle_nuB[[e]]<- ResultEffect[[9]]
+    mle_omegaBA[[e]]<- ResultEffect[[10]]
+   
+    mle_trans13[[e]]<- ResultEffect[[11]]
+    mle_etaB[[e]]<- ResultEffect[[12]]
+
+
+    mle_epsilonB[[e]] = mle_epsilonAB[[e]] + mle_trans42[[e]]
+    mle_epsilonA[[e]] = mle_epsilonAB[[e]] + mle_trans43[[e]]
+    
+    mle_gammaA[[e]] =  mle_gammaAB[[e]] + mle_trans12[[e]]
+    mle_gammaB[[e]] =  mle_gammaAB[[e]] + mle_trans13[[e]]
+    
+
+    mle_pB <-matrix(0, nrow=R, ncol=N)
+    mle_pAb <-matrix(0, nrow=R, ncol=N)
+    mle_pAB <-matrix(0, nrow=R, ncol=N)
+    
+    
+    for(s in 1:R)
+    { 
+      for(n in 1:N)
+      {    
+        mle_pB[s,n] <- 1/(1+exp(-(b[16] + b[19]*tempcov[s,n])))
+        mle_pAb[s,n] <- 1/(1+exp(-(b[17] + b[20]*tempcov[s,n])))
+        mle_pAB[s,n] <- 1/(1+exp(-(b[18] + b[21]*tempcov[s,n])))
+      }
+    }
+    
+    }
+
+}
+
+
+AICtrans<-AICc
+npartrans<- npar 
+Best_trans_model<-effectlist[AICc==min(AICc[2:length(AICc)])]
+
+```
+
+
+
+Here we calculate the standard errors for the parameter estimates using the delta method.
+
+```{r}
+
+param=c('psiB', 
+'psiAb', 
+'psiAB',
+'gammaA', 
+'gammaB', 
+'gammaAB', 
+'nuA',
+'omegaAB', 
+'etaB',
+'nuB',
+'omegaBA', 
+'etaA',
+'epsilonAB', 
+'epsilonB',
+'epsilonA',
+'pB',
+'pAb', 
+'pAB')
+
+
+#names(res$par)<-param
+
+ 
+#hessian<-solve(res$hessian)
+
+hessian<- (MASS::ginv(hessianfinal))
+#  alternative method for estimates which are on a logit scale only
+# ICpsiB <- 1 / (1 + exp(-c((psiB - 1.96* (hessian[1])), (psiB + 1.96* (hessian[1])))))
+# ICpsiAb <- 1 / (1 + exp(-c((psiAb - 1.96* (hessian[2])), (psiAb + 1.96* (hessian[2])))))
+# ICpsiAB <- 1 / (1 + exp(-c((psiAB - 1.96* (hessian[3])), (psiAB + 1.96* (hessian[3])))))
+# 
+# ICpsiB 
+# ICpsiAb
+# ICpsiAB
+# 
+# gammaABexp<-exp(gammaAB - 1.96* (hessian[6])) 
+# gammaBexp<-exp(gammaB - 1.96* (hessian[5]))
+# gammaAexp<-exp(gammaA - 1.96* (hessian[4]))
+# 
+# 
+# ICgammaAB <-  gammaABexp / (1+ gammaABexp + gammaBexp + gammaAexp) 
+# ICgammaAB
+# ICgammaA <- ICgammaAB + exp(gammaA - 1.96* (hessian[4])) / (1+exp(gammaAB - 1.96* (hessian[6])) +exp(gammaA - 1.96* (hessian[4]))+exp(gammaB - 1.96* (hessian[5])))
+# ICgammaB <- exp(gammaB) / (1+exp(gammaAB)+exp(gammaA)+exp(gammaB))
+# 
+# ICgammaA
+# ICgammaB
+
+
+
+# DELTAMETHOD FOR PSI 
+res$par<-bbest
+x1 <- res$par[1]
+x2 <- res$par[2]
+x3 <- res$par[2]
+
+g1<-expression(exp(x1) / (1+exp(x1)))
+mean<-c(x1,x2, x3)
+se_psiB <- deltamethod(g1, x1, hessian[1,1], ses=TRUE)
+
+g2<-expression(exp(x2) / (1+exp(x2)))
+
+se_psiAb <- se_psiB #deltamethod(g2, x2, hessian[2,2], ses=TRUE)
+
+g3<-expression(exp(x3) / (1+exp(x3)))
+
+se_psiAB <- se_psiB #deltamethod(g3, x3, hessian[2,2], ses=TRUE)
+
+
+
+# DELTAMETHOD FOR GAMMA 
+x1 <- res$par[6]
+x2 <- res$par[4]
+x3 <- res$par[5]
+
+g1<-expression(exp(x1) / (1+exp(x1)+exp(x2)+exp(x3)))
+mean<-c(x1,x2, x3)
+se_gammaAB <- deltamethod(g1, c(x2, x3, x1), hessian[4:6,4:6], ses=TRUE)
+
+g2<-expression(exp(x1) / (1+exp(x1)+exp(x2)+exp(x3)) + exp(x2) / (1+exp(x1)+exp(x2)+exp(x3)))
+
+se_gammaA <- deltamethod(g2, c(x2, x3, x1), hessian[4:6,4:6], ses=TRUE)
+
+g3<-expression(exp(x1) / (1+exp(x1)+exp(x2)+exp(x3)) + exp(x2) / (1+exp(x1)+exp(x2)+exp(x3)))
+se_gammaB <- deltamethod(g3, c(x2, x3, x1), hessian[4:6,4:6], ses=TRUE)
+
+
+
+
+# DELTAMETHOD FOR transition from occupied by poacher to anyother states NuB, omegaBA and etaA
+
+x1 <- res$par[10]
+x2 <-res$par[11]
+x3 <- res$par[4]
+
+
+g1<-expression(exp(x1) / (1+exp(x1)+exp(x2)+exp(x3)))
+se_nuB <- deltamethod(g1,c(x1, x2, x3), hessian[10:12,10:12], ses=TRUE)
+
+g2<-expression(exp(x2) / (1+exp(x1)+exp(x2)+exp(x3)))
+se_omegaBA <-deltamethod(g2,c(x1, x2, x3), hessian[10:12,10:12], ses=TRUE)
+
+g3<-expression(exp(x3) / (1+exp(x1)+exp(x2)+exp(x3)))
+se_etaA <- deltamethod(g3, c(x1, x2, x3),hessian[10:12,10:12], ses=TRUE)
+
+# DELTAMETHOD FOR extinction probabilities given that both species are present : epsilon
+
+x1 <- res$par[13]
+x2 <-res$par[14]
+x3 <- res$par[15]
+
+
+g1<-expression(exp(x1) / (1+exp(x1)+exp(x2)+exp(x3)))
+se_epsilonAB <- deltamethod(g1, c(x1, x2, x3), hessian[13:15,13:15], ses=TRUE)
+
+g2<-expression(exp(x1) / (1+exp(x1)+exp(x2)+exp(x3)) + exp(x2) / (1+exp(x1)+exp(x2)+exp(x3)))
+
+se_epsilonA <- deltamethod(g2, c(x1, x2, x3), hessian[13:15,13:15], ses=TRUE)
+
+g3<-expression(exp(x1) / (1+exp(x1)+exp(x2)+exp(x3)) + exp(x3) / (1+exp(x1)+exp(x2)+exp(x3)))
+
+se_epsilonB <- deltamethod(g3, c(x1, x2, x3), hessian[13:15,13:15], ses=TRUE)
+
+
+# DELTAMETHOD FOR transition from occupied by poacher to anyother states NuA, omegaAB and etaB 
+
+x1 <- res$par[15]
+x2 <-res$par[8]
+x3 <- res$par[9]
+
+#exp(b[8]) / (1+exp(b[5])+exp(b[8])+exp(b[14]))
+
+
+
+g1<-expression(exp(x1) / (1+exp(x1)+exp(x2)+exp(x3)))
+se_nuA <- se_epsilonB #deltamethod(g1, c(x1, x2, x3), hessian[7:9,7:9], ses=TRUE)
+
+
+g2<-expression(exp(x2) / (1+exp(x1)+exp(x2)+exp(x3)))
+se_omegaAB <-deltamethod(g2,c(x1, x2, x3), hessian[c(15,8,9),c(15,8,9)], ses=TRUE)
+
+g3<-expression(exp(x3) / (1+exp(x1)+exp(x2)+exp(x3)))
+se_etaB <- deltamethod(g3,c(x1, x2, x3), hessian[c(15,8,9),c(15,8,9)], ses=TRUE)
+
+se_etaA <- se_gammaA
+
+# DELTAMETHOD for detection
+
+
+se_pAb<-matrix(data=0, nrow=nrow(tempcov), ncol=ncol(tempcov))
+se_pAB<-matrix(data=0, nrow=nrow(tempcov), ncol=ncol(tempcov))
+se_pB<-matrix(data=0, nrow=nrow(tempcov), ncol=ncol(tempcov))
+
+
+for(i in 1:nrow(tempcov))
+  for(j in 1:ncol(tempcov))
+  {
+    
+  x1 <- res$par[16]
+  x2 <-res$par[17]
+  x3 <- res$par[18]
+  x4 <- res$par[19]*mean(tempcov[i,j])
+  x5 <- res$par[20]*mean(tempcov[i,j])
+  x6 <- res$par[21]*mean(tempcov[i,j])
+  
+    
+  g1<-expression(exp(x1) / (1+exp(x1+x4)))
+  se_pAb[i,j] <- deltamethod(g1, c(x1,x4), hessian[c(16,19),c(16,19)], ses=TRUE)
+
+  g2<-expression(exp(x2) / (1+exp(x2+x5))) 
+
+  se_pAB[i,j] <- deltamethod(g2, c(x2,x5), hessian[c(17,20),c(17,20)], ses=TRUE)
+
+  g3<-expression(exp(x3) / (1+ exp(x3+x6)))
+
+  se_pB[i,j] <- deltamethod(g3, c(x3,x5), hessian[c(18,21),c(18,21)], ses=TRUE)
+}
+
+
+
+SE<- c(se_psiAb, se_psiB, se_psiAB, se_gammaAB, se_gammaA, 
+se_gammaB, 
+se_nuA, 
+se_omegaAB, 
+se_etaB, 
+se_nuB,
+se_omegaBA,
+se_etaA, 
+se_epsilonAB, 
+se_epsilonB,
+se_epsilonA, se_pAb, se_pAB, se_pB) 
+#SE 
+```
+
+Here we display all candidate models from the best to the least supported by the data that is in a decreasing order of AIC.
+
+```{r}
+names(AICocc)<-c("no prey effect on occupancy of poachers", "species interaction effects on occupancy", "spatial effect of patroling effort on occupancy", "spatial effect of patroling effort on poacher occupancy only", "spatial effect of patroling effort on poacher occupancy given presence/absence of prey", "distance to road on occupancy", "stream length effect on occupancy", "distance to station effect on occupancy")
+
+
+
+names(AICdet)<-c("cst detection","no prey effects on detection of poachers", "no poacher effects on detection of preys","species interaction effects on detection","spatial effect of patroling effort on detection", "time effect of patroling effort on detection", "spatio-temporal effect of patroling effort on detection", "distance to road effect on detection", "stream length effect on detection", "distance to station effect on detection")
+
+
+names(AICtrans)<-c("no prey effects on transition", "poachers performance on transition","prey defensive strategy on transition", "spatial effects of patrolling effort on transition of poachers only", "temporal effects of patrolling effort on transition of poachers only", "spatial effects of patrolling effort on transition", "temporal effects of patrolling effort on transition", "spatio-temporal effects of patrolling effort on transition", "delayed effects of spatio-temporal patrolling effort on transition")
+
+# sorting the models with AIC in decresing order 
+finalAIC<-c(AICdet, AICocc, AICtrans)
+index<-order(finalAIC)
+finalAIC<-sort(finalAIC)
+
+
+devMod <- c(devModel1, devModel2, devModel3)
+nparmod <- c(npardet, nparocc, npartrans)
+devModel <- devMod[index]
+nparmod <- nparmod[index]
+```
+
+Table 1: Model selection for determining effects of detection, occupancy and transition processes. The deviance, AICc the Akaike Information Criterion corrected for small sample size and overdispersed data. The best model supported by the data is the one with the lowest AICc.
+
+Model                         | # parameters        | Deviance         | AICc            | $\Delta AICc$  
+-------------                 | --------------   | ------------------  | --------------- | ---------------- 
+`r names(finalAIC)[1]` |  `r nparmod[1]`| `r devModel[1]`| `r finalAIC[1]` | 0
+`r names(finalAIC)[2]` |  `r nparmod[2]`| `r devModel[2]`| `r finalAIC[2]`  | `r finalAIC[2] - finalAIC[1]`
+`r names(finalAIC)[3]` |  `r nparmod[3]`| `r devModel[3]`| `r finalAIC[3]` | `r finalAIC[3] - finalAIC[1]`
+`r names(finalAIC)[4]` |  `r nparmod[4]`|  `r devModel[4]`  | `r finalAIC[4]` | `r finalAIC[4] - finalAIC[1]`
+`r names(finalAIC)[5]` |  `r nparmod[5]`|  `r devModel[5]`  | `r finalAIC[5]` | `r finalAIC[5] - finalAIC[1]`
+`r names(finalAIC)[6]` |  `r nparmod[6]`|  `r devModel[6]`  | `r finalAIC[6]` | `r finalAIC[6] - finalAIC[1]`
+`r names(finalAIC)[7]` |  `r nparmod[7]`|  `r devModel[7]`  | `r finalAIC[7]` | `r finalAIC[7] - finalAIC[1]`
+`r names(finalAIC)[8]` |  `r nparmod[8]`|  `r devModel[8]`  | `r finalAIC[8]` | `r finalAIC[8] - finalAIC[1]`
+`r names(finalAIC)[9]` |  `r nparmod[9]`|  `r devModel[9]`  | `r finalAIC[9]` | `r finalAIC[9] - finalAIC[1]`
+`r names(finalAIC)[10]` |  `r nparmod[10]`|  `r devModel[10]`  | `r finalAIC[10]` | `r finalAIC[10] - finalAIC[1]`
+`r names(finalAIC)[11]` |  `r nparmod[11]`|  `r devModel[11]`  | `r finalAIC[11]` | `r finalAIC[11] - finalAIC[1]`
+`r names(finalAIC)[12]` |  `r nparmod[12]`|  `r devModel[12]`  | `r finalAIC[12]` | `r finalAIC[12] - finalAIC[1]`
+`r names(finalAIC)[13]` |  `r nparmod[13]`|  `r devModel[13]`  | `r finalAIC[13]` | `r finalAIC[13] - finalAIC[1]`
+`r names(finalAIC)[14]` |  `r nparmod[14]`|  `r devModel[14]`  | `r finalAIC[14]` | `r finalAIC[14] - finalAIC[1]`
+`r names(finalAIC)[15]` |  `r nparmod[15]`|  `r devModel[15]`  | `r finalAIC[15]` | `r finalAIC[15] - finalAIC[1]`
+`r names(finalAIC)[16]` |  `r nparmod[16]`|  `r devModel[16]`  | `r finalAIC[16]` | `r finalAIC[16] - finalAIC[1]`
+`r names(finalAIC)[17]` |  `r nparmod[17]`|  `r devModel[17]`  | `r finalAIC[17]` | `r finalAIC[17] - finalAIC[1]`
+`r names(finalAIC)[18]` |  `r nparmod[18]`|  `r devModel[18]`  | `r finalAIC[18]` | `r finalAIC[18] - finalAIC[1]`
+`r names(finalAIC)[19]` |  `r nparmod[19]`|  `r devModel[19]`  | `r finalAIC[19]` | `r finalAIC[19] - finalAIC[1]`
+`r names(finalAIC)[20]` |  `r nparmod[20]`|  `r devModel[20]`  | `r finalAIC[20]` | `r finalAIC[20] - finalAIC[1]`
+`r names(finalAIC)[21]` |  `r nparmod[21]`|  `r devModel[21]`  | `r finalAIC[21]` | `r finalAIC[21] - finalAIC[1]`
+`r names(finalAIC)[22]` |  `r nparmod[22]`|  `r devModel[22]`  | `r finalAIC[22]` | `r finalAIC[22] - finalAIC[1]`
+`r names(finalAIC)[23]` |  `r nparmod[23]`|  `r devModel[23]`  | `r finalAIC[23]` | `r finalAIC[23] -finalAIC[1]` 
+`r names(finalAIC)[24]` |  `r nparmod[24]`|  `r devModel[24]`  | `r finalAIC[24]` | `r finalAIC[24] - finalAIC[1]`
+`r names(finalAIC)[25]` |  `r nparmod[25]`|  `r devModel[25]`  | `r finalAIC[25]` | `r finalAIC[25] -finalAIC[1]` 
+
+
+In the following table, we displayed for each parameter the maximum likelihood estimates and the standard errors obtained from the best model: 
+
+
+Probability                         | Parameter symbol                        | Mean estimate   | SE  
+-------------                     | --------------   | ------------------  | ------------------ 
+Occupancy of Poacher given Animal is present | $\psi_{P/A}$                      | `r mle_psiAB`    | `r se_psiAB`    
+Occupancy of Poacher given Animal is absent | $\psi_{P/\bar{W}}$                      | `r mle_psiAb`    | `r se_psiAb`    
+Occupancy of Animal | $\psi_{A}$                        | `r mle_psiB`     | `r se_psiB`     
+Extinction of Animal and Poacher  | $\epsilon_{AP}$                   | `r mle_epsilonAB[[1]]`| `r se_epsilonAB`
+Extinction of Poacher given presence of Animal | $\epsilon_{P/W}$                    | `r mle_epsilonA[[1]] - mle_epsilonAB[[1]]` | `r se_epsilonA` 
+Extinction of Animal given presence of Poacher |$\epsilon_{W/P}$                    | `r mle_epsilonB[[1]] - mle_epsilonAB[[1]]` | `r se_epsilonB`
+Colonisation of Poacher given presence of Animal  | $\eta_{P}$                        | `r mle_etaA[[1]]`     | `r se_etaA`     
+Colonisation of Animal given presence of Poacher  | $\eta_{W}$                        | `r mle_etaB[[1]]`     | `r se_etaB`    
+Colonisation of Animal and Poacher  | $\gamma_{WP}$                     | `r mle_gammaAB[[1]]`  | `r se_gammaAB` 
+Colonisation of Poacher given absence of Animal  | $\gamma_{P/\bar{W}}$                      | `r mle_gammaA[[1]] - mle_gammaAB[[1]]`   | `r se_gammaA`
+Colonisation of Animal given absence of Poacher  | $\gamma_{W/\bar{P}}$                      | `r mle_gammaB[[1]] - mle_gammaAB[[1]]`   | `r se_gammaB`
+Extinction of Poacher given absence of Animal  | $\nu_{P}$                         | `r mle_nuA[[1]]`      | `r se_nuA`      
+Extinction of Animal given absence of Poacher  | $\nu_{W}$                         | `r mle_nuB[[1]]`      | `r se_nuB`      
+Replacement of Poacher by Animal  | $\omega_{PW}$                     | `r mle_omegaAB[[1]]`  | `r se_omegaAB`  
+Replacement of Animal by Poacher  | $\omega_{WP}$                     | `r mle_omegaBA[[1]]`  | `r se_omegaBA`  
+Detection of Poacher given presence of Animal  | $p_{PW}$                          | `r mean(mle_pAB)`      | `r mean(se_pAB)`  
+Detection of Poacher given absence of Animal  | $p_{P/\bar{W}}$                           | `r mean(mle_pAb)`      | `r mean(se_pAb)`     
+Detection of Animal  | $p_{W}$                           | `r mean(mle_pB)`       | `r mean(se_pB)`       
+
+## Plot the mean estimates and their associated confidence intervals obtained from the best model  
+```{r}
+library(plotrix)
+
+
+moy<-c(mle_psiB, mle_psiAb, mle_epsilonB[[1]], mle_epsilonA[[1]], mle_nuB[[1]], mle_nuA[[1]],  mle_gammaB[[1]], mle_gammaA[[1]], mle_etaB[[1]], mle_etaA[[1]], mle_omegaBA[[1]], mle_omegaAB[[1]]) 
+
+se<-c(se_psiB, se_psiAb, se_epsilonB, se_epsilonA, se_nuB,  se_nuA, se_gammaB, se_gammaA, se_etaB, se_etaA, se_omegaBA, se_omegaAB) 
+
+x<-1:12
+
+#colvec <- grey.colors(12)
+
+moy<-unlist(moy)
+se<-as.numeric(se)
+#moy<-as.numeric(moy)
+
+
+titre<-c(expression(psi["W"]), expression(psi["P"]), expression(epsilon["W/P"]), expression(epsilon["P/W"]), expression(epsilon[paste("W/",bar("P"))]), expression(epsilon[paste("P/",bar("W"))]), expression(gamma[paste("W/",bar("P"))]), expression(gamma[paste("P/",bar("W"))]),  expression(gamma["W/P"]), expression(gamma["P/W"]),expression(omega["WP"]),expression(omega["PW"])) 
+
+
+plotCI(x,moy, 
+       uiw=se, err="y",las=1, ylab = "", cex=1.4,xaxt="n", ylim=c(0,1), xlab = "parameters", cex.axis=1.4,
+       lwd=2, pch=20) 
+
+         
+
+axis(side=1,at=c(1:12),label=titre,cex.axis=1.3, las =1)
+mtext(side = 2, text ="probabilities", line = 3, cex=1.3)
+
+
+```
+
+
+## Plot the detection probabilities and their associated confidence intervals as a function of patrolling effort  
+
+```{r}
+pB<-expand.grid(mle_pB)
+pAb<-expand.grid(mle_pAb)
+pAB<-expand.grid(mle_pAB)
+
+seB<-expand.grid(se_pB)
+seAb<-expand.grid(se_pAb)
+seAB<-expand.grid(se_pAB)
+
+ 
+  serie<-seq(1,48,by=5)
+
+  x<-expand.grid(tempcov)
+ 
+  
+  
+  
+  
+  mat1 <- data.frame( x=x, estimates = pB, sem= pB - 0.01, sep= pB + - 0.01, parameter= rep("p_W", length(x)))
+  mat2 <- data.frame( x=x, estimates = pAb, sem= pAb - seAb , sep= se_pAb + pAb, parameter= rep("p_PnoW", length(x)))
+  mat3 <- data.frame( x=x, estimates = pAB, sem= pAB - seAb, sep= pAB + seAb, parameter= rep("p_WP", length(x)))
+ 
+  mat<-rbind(mat1,mat2,mat3)
+colnames(mat)<-c("x","estimates","sem", "sep", "parameter")
+  library(ggplot2)
+
+  
+  
+  p <- ggplot(data=mat, aes(x=x, y=estimates)) + 
+  geom_line(aes(x=x, y=estimates, linetype= parameter)) + 
+  geom_ribbon(alpha=0.7, aes(ymin=sem, ymax=sep, fill= parameter, linetype= parameter)) +  
+  xlab("patrolling effort") + 
+  ylab("detection probabilities")
+
+  p + theme_classic() 
+  
+  
+ 
+ 
+```
+
+
+We plot the probability of the 4 occupancy state (site occupied by wildlife only WO, by poachers only PO, by both poachers and wildlife PW or unoccupied site U) over 5 years.
+
+```{r}
+par(mfrow=c(2,2))
+
+MCiter<-1000
+
+psiB<-rnorm(MCiter, mle_psiB, se_psiB)
+psiB[psiB<0]<-0
+psiB[psiB>1]<-1
+
+
+psiAB<-rnorm(MCiter, mle_psiAB, se_psiAB)
+psiAB[psiAB<0]<-0
+psiAB[psiAB>1]<-1
+psiAb<-psiAB
+
+
+epsilonA<-rnorm(MCiter, mle_epsilonA[[1]], se_epsilonA)
+epsilonA[epsilonA<0]<-0
+epsilonA[epsilonA>1]<-1
+trans43<-epsilonA
+
+gammaAB<-rnorm(MCiter, 0, 0.01)
+gammaAB[gammaAB<0]<-0
+gammaAB[gammaAB>1]<-1
+
+
+epsilonB<-rnorm(MCiter, mle_epsilonB[[1]], se_epsilonB)
+epsilonB[epsilonB<0]<-0
+epsilonB[epsilonB>1]<-1
+trans42<-epsilonB
+
+
+nuA<-rnorm(MCiter, mle_nuA[[1]], se_nuA)
+nuA[nuA<0]<-0
+nuA[nuA>1]<-1
+
+
+
+nuB<-rnorm(MCiter, mle_nuB[[1]], se_nuB)
+nuB[nuB<0]<-0
+nuB[nuB>1]<-1
+
+
+etaA<-rnorm(MCiter, mle_etaA[[1]], se_etaA)
+etaA[etaA<0]<-0
+etaA[etaA>1]<-1
+
+
+etaB<-rnorm(MCiter, mle_etaB[[1]], se_etaB)
+etaB[etaB<0]<-0
+etaB[etaB>1]<-1
+
+
+gammaB<-rnorm(MCiter, mle_gammaB[[1]], 0.01)
+gammaB[gammaB<0]<-0
+gammaB[gammaB>1]<-1
+trans13<-gammaB
+
+gammaA<-rnorm(MCiter, mle_gammaA[[1]], se_gammaA)
+gammaA[gammaA<0]<-0
+gammaA[gammaA>1]<-1
+trans12<-gammaA
+
+omegaAB<-rnorm(MCiter, mle_omegaAB[[1]], se_omegaAB)
+omegaAB[omegaAB<0]<-0
+omegaAB[omegaAB>1]<-1
+
+
+omegaBA<-rnorm(MCiter, mle_omegaBA[[1]], se_omegaBA)
+omegaBA[omegaBA<0]<-0
+omegaBA[omegaBA>1]<-1
+
+tps<-5
+
+
+R<-tps
+dynocc1<-list()
+meandynmat<-matrix(0,(R+1),4)
+for(i in 1: MCiter)
+{  
+
+      PI1 <- array(data=0, dim=c(1,2,R))
+      PI2 <- array(data=0, dim=c(2,4,R))
+      PI <- array(data=0, dim=c(1,4,R))
+   
+      A <- array(0,c(4,4,R))
+  #
+      PI1[,,1] <- c(1-psiB[i],psiB[i])
+      PI2[,,1] <- matrix(c(1-psiAb[i],psiAb[i],0,0,0,0,1-psiAB[i],psiAB[i]),nrow=2,byrow=T) # 
+      PI[,,1] <- PI1[,,1] %*% PI2[,,1]
+     
+      dynocc<-matrix(0,(R+1),4)
+      dynocc[1,]<- PI[,,1]       
+     for(z in 1:(R-1))
+     {  
+
+      A[1:4,1:4,z] <- matrix(c(
+      1-trans12[i]-trans13[i]-gammaAB[i],trans12[i],trans13[i],gammaAB[i],
+      nuA[i],1-nuA[i]-omegaAB[i]-etaB[i],omegaAB[i],etaB[i],
+      nuB[i],omegaBA[i],1-nuB[i]-omegaBA[i]-etaA[i],etaA[i],
+      mle_epsilonAB[[1]],trans42[i],trans43[i],1-trans42[i]-trans43[i]-mle_epsilonAB[[1]]), nrow = 4, byrow = TRUE)
+   
+      Markov<- PI[,,z] %*% (A[,,z])
+      dynocc[(z+1),]<- Markov
+      PI[,,z+1]<-Markov
+  
+     }
+      
+     dynocc[dynocc<0]<-0  
+     dynocc1[[i]]<-dynocc
+  
+     meandynmat<-dynocc1[[i]]+meandynmat
+  
+}
+
+
+
+  
+  meandynmat<-Reduce("+", dynocc1)/MCiter
+  sddynmat<-matrix(0,(R+1),4)
+  for(i in 1:MCiter)
+  {
+     sddynmat<-sddynmat+(dynocc1[[i]]- meandynmat)^2
+    
+  }  
+  sddynmat<-sddynmat/MCiter
+  
+  matmoy<-meandynmat
+  colnames(matmoy)<-c("U", "psiAb", "psiB", "psiAB")
+  x<-1:(R+1)
+  
+  
+  matCIsup<-meandynmat+sddynmat
+  colnames(matCIsup)<-c("CIsup_U", "CIsup_psiAb", "CIsup_psiB", "CIsup_psiAB")
+  
+  
+  matCIinf<-meandynmat-sddynmat
+  colnames(matCIinf)<-c("CIinf_U", "CIinf_psiAb", "CIinf_psiB", "CIinf_psiAB")
+  
+  
+  mat<-data.frame(x=x,matmoy, matCIsup, matCIinf)
+  mat<-mat[1:R,]
+  
+  library(ggplot2)
+
+
+  
+  p<- ggplot(data=mat, aes(x=x, y=psiB)) + 
+  geom_line(data=mat,aes(x=x, y=psiB)) + 
+    geom_line(data=mat,aes(x=x, y=psiAb)) + 
+    geom_line(data=mat,aes(x=x, y=psiAB)) +
+    geom_ribbon(alpha=0.7, aes(ymin=CIinf_psiB, ymax=CIsup_psiB, fill="WO")) +
+    geom_ribbon(alpha=0.7, aes(ymin=CIinf_psiAb, ymax=CIsup_psiAb, fill="PO")) +
+   geom_ribbon(alpha=0.7, aes(ymin=CIinf_psiAB, ymax=CIsup_psiAB, fill="WP")) +
+    scale_colour_manual(name="occupancy state", values=c("pink", "green", "blue"),
+                      labels = c("WP", "PO", "WO"))  + xlab("Year") + ylab("Occupancy probability") 
+    
+    p + theme_classic() 
+  
+    
+    
+  meandynmat
+  
+```
+
+
+# Spatial variation in detection probability in the two study areas
+```{r}
+ library(RColorBrewer)  
+# 
+ sp_grd@data$pB<-rep(0,nrow(sp_grd))
+ sp_grd@data$pAB<-rep(0,nrow(sp_grd))
+ sp_grd@data$pAb<-rep(0,nrow(sp_grd))
+# 
+ list_pixelpatr <- over(geometry(polys), patr ,returnList = FALSE)
+ sp<-sp_grd@data$id[which(!is.na(list_pixelpatr[,1]))]
+ inc<-0
+ for (i in which(!is.na(list_pixelpatr[,1]))){
+   inc<-inc+1
+   sp_grd@data$pB[sp_grd@data$id[i]]<-mean(mle_pB[inc,])
+   sp_grd@data$pAB[sp_grd@data$id[i]]<-mean(mle_pAB[inc,])
+   sp_grd@data$pAb[sp_grd@data$id[i]]<-mean(mle_pAb[inc,])
+   
+ }
+# 
+# 
+# 
+ N = 9
+ at_regular = seq(0,1,length=N+1)
+ my.palette <- brewer.pal(n = N, name = "OrRd")
+ p1 = spplot(sp_grd, c("pB"), col.regions = my.palette, at = at_regular, main = c("pW"), col = "transparent")
+ p2 = spplot(sp_grd, c("pAb"), col.regions = my.palette, at = at_regular, main = c('pPnoW'), col = "transparent")
+ p3 = spplot(sp_grd, c("pAB"), col.regions = my.palette, at = at_regular, main = c("pPW"), col = "transparent")
+ print(p1, split=c(1,1,3,1), more=TRUE)
+ print(p2, split=c(2,1,3,1), more=TRUE)
+ print(p3, split=c(3,1,3,1))
+# 
+# 
+# 
+ sp_grd2@data$pB<-rep(0,nrow(sp_grd2))
+ sp_grd2@data$pAB<-rep(0,nrow(sp_grd2))
+ sp_grd2@data$pAb<-rep(0,nrow(sp_grd2))
+# 
+ list_pixelpatr <- over(geometry(polys2), patr2 ,returnList = FALSE)
+ sp<-sp_grd@data$id[which(!is.na(list_pixelpatr[,1]))]
+# 
+ for (i in which(!is.na(list_pixelpatr[,1]))){
+   inc<-inc+1
+   sp_grd2@data$pB[sp_grd2@data$id[i]]<-mean(mle_pB[inc,])
+   sp_grd2@data$pAB[sp_grd2@data$id[i]]<-mean(mle_pAB[inc,])
+   sp_grd2@data$pAb[sp_grd2@data$id[i]]<-mean(mle_pAb[inc,])
+#   
+  }
+# 
+# 
+# 
+ p1 = spplot(sp_grd2, c("pB"), col.regions = my.palette, at = at_regular, main = c("pW"), col = "transparent")
+ p2 = spplot(sp_grd2, c("pAb"), col.regions = my.palette, at = at_regular, main = c('pPnoW'), col = "transparent")
+ p3 = spplot(sp_grd2, c("pAB"), col.regions = my.palette, at = at_regular, main = c("pPW"), col = "transparent")
+ print(p1, split=c(1,1,3,1), more=TRUE)
+ print(p2, split=c(2,1,3,1), more=TRUE)
+ print(p3, split=c(3,1,3,1))
+```
+
+# Spatial variation in the patrolling effort in the two study areas
+```{r}
+ library(RColorBrewer)  
+# 
+ sp_grd@data$effortPPWS<-rep(0,nrow(sp_grd))
+ # 
+ list_pixelpatr <- over(geometry(polys), patr ,returnList = FALSE)
+ sp<-sp_grd@data$id[which(!is.na(list_pixelpatr[,1]))]
+ inc<-0
+ for (i in which(!is.na(list_pixelpatr[,1]))){
+   inc<-inc+1
+   sp_grd@data$effortPPWS[sp_grd@data$id[i]]<-mean(tempcov[inc,])
+ 
+ }
+# 
+
+ sp_grd2@data$effortMPF<-rep(0,nrow(sp_grd2))
+ # 
+ list_pixelpatr <- over(geometry(polys2), patr2 ,returnList = FALSE)
+ sp<-sp_grd@data$id[which(!is.na(list_pixelpatr[,1]))]
+# 
+ for (i in which(!is.na(list_pixelpatr[,1]))){
+   inc<-inc+1
+   sp_grd2@data$effortMPF[sp_grd2@data$id[i]]<-mean(tempcov[inc,])
+  #   
+  }
+# 
+
+ 
+ 
+  
+ N = 9
+ at_regular = seq(0,1,length=N+1)
+ my.palette <- brewer.pal(n = N, name = "OrRd")
+ p3 = spplot(sp_grd, c("effortPPWS"), col.regions = my.palette, at = at_regular, main = c("PPWS"), col = "transparent")
+
+ p4 = spplot(sp_grd2, c("effortMPF"), col.regions = my.palette, at = at_regular, main = c("MPF"), col = "transparent")
+
+ print(p3, split=c(1,1,3,1), more=TRUE)
+ print(p4, split=c(2,1,3,1), more=TRUE)
+  
+```
+
