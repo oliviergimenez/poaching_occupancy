@@ -1,4 +1,5 @@
-## Inferring wildlife poaching in Southeast Asia with multispecies dynamic occupancy models and hidden Markov models. Lucile Marescot and Olivier Gimenez, December 31, 2018.
+## Inferring wildlife poaching in Southeast Asia with multispecies dynamic occupancy models and hidden Markov models. 
+### Lucile Marescot and Olivier Gimenez, December 31, 2018.
 
 This repo contains data and codes associated with a submitted paper on inferring wildlife poaching in Southeast Asia with multispecies dynamic occupancy models and hidden Markov models. Here we present the two-species dynamic occupancy model introduced by MacKenzie et al. (2006) (see Table 8.7 page 245) which we formulate as a hidden Markov model (HMM) and implement in R.
 
