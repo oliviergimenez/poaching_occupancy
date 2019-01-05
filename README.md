@@ -18,7 +18,7 @@ The code "Smart data occupancy analysis.Rmd" loads the SMART data for the two st
 * Build and map the occupancy grid (Figure 1 is displayed)
 * A dynamic two-species patch-occupancy model, formulated as a HMM 
    * the model: vector of initial occupancy, transition matrix and observation matrix
-   * load the function showing all possible effects on the para?eters and returning the associated vector of regression coefficients
+   * load the function showing all possible effects on the parameters and returning the associated vector of regression coefficients
    * load the likelihood function of each of these models 
    * selecting the best models regarding effects on detection, on occupancy and on the transition
    * estimating parameters
@@ -42,9 +42,10 @@ The R scripts to perform the simulation are structured as follows:
 
 * Generate the simulated data sets 
    * for different study design "Simulation_Bias_OccupancyDesign.R" 
-   * for species associated to different detection and occupancy probabilities "Simulation_Bias_Parameters.R"
+   * for species associated to different detection and occupancy probabilities "Simulation_Bias_Parameters.R" 
+ both are calling source('Multispecies_occupancy_dynamic_simul_fitting.R')
 * Model fitting 
-   * calculate the probability of obtainting the simulated data given the two-species dynamic occupancy model via source('likelihood_CSTeffects.R')
+   * calculate the probability of obtainting the simulated data given the two-species dynamic occupancy model via source('Multispecies_occupancy_dynamic_simul_fitting.R')
 * Calculate the mean bias and minimum square error 
 
 This code was developped in R version 3.5.0 (2018-04-23). This code is licensed under the terms of the GNU General Public License v3.0.
