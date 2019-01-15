@@ -27,9 +27,9 @@ The code "Smart data occupancy analysis.Rmd" loads the SMART data for the two st
 Eventually, we present the results through several figures: 
 
   * Plot the mean estimates and their associated confidence intervals obtained from the best model (Figure 2) 
-  * Plot the detection probabilities as a function of patrolling effort (Figure 4)
-  * Plot the state probabilities during the 4 years of the study period (Figure 5)
-  * Spatial variation in detection and patrolling effort in the two study areas
+  * Plot the detection probabilities as a function of patrolling effort (Appendix Figure A.1)
+  * Plot the state probabilities during the 4 years of the study period (Figure 3)
+  * Spatial variation in detection and patrolling effort in the two study areas (Appendix Figure A.2)
 
 
 ### 3. Simulation study 
