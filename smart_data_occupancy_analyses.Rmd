@@ -558,11 +558,14 @@ We benefit from the results of the simulation study above to design the occupanc
    }
    
  }
-# Binding the covariates specific to PPWS and SWS together 
+# Binding the covariates specific to PPWS and SWS together and standardizing them
 tempcov<- rbind(tempcov, tempcov2)
 roadcov<- c(DistToRoad, DistToRoad2)
-streamcov<- c(streamlength, streamlength2)
-stationcov<-c(DistToStation, DistToStation2)      
+roadcov<- roadcov/max(roadcov)
+streamcov <- c(streamlength, streamlength2)
+streamcov <- streamcov/max(streamcov)
+stationcov <- c(DistToStation, DistToStation2)
+stationcov <- stationcov/max(stationcov)
 ```
 
 We also display the distribution of observed sites in the follwoing states unoccupied (0), occupied by poachers (1), occupied by animal preys (3), occupied by both (4).
